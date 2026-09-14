@@ -260,7 +260,7 @@ cp config.example.json config.json
 
 > [!WARNING]
 > PushPlus **不做手机号验证会一直报「用户令牌不正确」**——这不是 Token 拿错了。
-> 仓库内 `如何获取PushPlus令牌.html` 提供了带截图的完整步骤说明。
+> 仓库内 [如何获取PushPlus令牌.html](如何获取PushPlus令牌.html) 提供了带截图的完整步骤说明。
 
 ### 命令行参数
 
