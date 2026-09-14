@@ -157,6 +157,10 @@ cd workbuddy-trae-auto-checkin
 node checkin.js --diagnose
 ```
 
+> [!TIP]
+> 第一次用建议先跑 `node checkin.js --self-test`（10 项离线自检，**不发任何网络请求**），
+> 确认代码与环境无误后再执行真正的签到。
+
 期望输出（路径会因机器而异）：
 
 ```text
