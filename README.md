@@ -260,7 +260,11 @@ cp config.example.json config.json
 
 > [!WARNING]
 > PushPlus **不做手机号验证会一直报「用户令牌不正确」**——这不是 Token 拿错了。
-> 仓库内 [如何获取PushPlus令牌.html](如何获取PushPlus令牌.html) 提供了带截图的完整步骤说明。
+
+📖 **完整图文步骤：[如何获取 PushPlus 令牌 →](docs/如何获取PushPlus令牌.md)**
+（含官网真实截图 + 每个页面的字段位置说明，3 分钟搞定）
+
+![签到失败时微信收到的通知示例](docs/images/05-wechat-notify.png)
 
 ### 命令行参数
 
@@ -317,7 +321,10 @@ workbuddy-trae-auto-checkin/
 ├── .gitignore                    # 密钥与运行时数据隔离规则
 ├── LICENSE                       # MIT
 ├── 项目优化日志.md                # 设计决策与改动记录
-├── 如何获取PushPlus令牌.html      # 推送通道申请图文教程
+├── docs/
+│   ├── 如何获取PushPlus令牌.md     # 令牌申请图文教程（GitHub 直接可读）
+│   └── images/                    # 教程配图（官网真实截图 + 界面示意图）
+├── 如何获取PushPlus令牌.html      # 同一教程的网页版（下载后双击浏览器打开）
 │
 │   ── 以下为运行时生成，已被 .gitignore 排除 ──
 ├── config.json                   # 你的实际配置（含 Token，勿分享）

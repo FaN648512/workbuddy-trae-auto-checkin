@@ -122,6 +122,24 @@
   }
   .faq-q { font-weight: 600; margin: 20px 0 6px; color: #1c1c1a; }
   .faq-a { margin: 0 0 4px; color: #444441; }
+  .shot {
+    display: block;
+    width: 100%;
+    margin: 14px 0 6px;
+    border: 1px solid #e3e1da;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.05);
+  }
+  .shot-cap { font-size: 12.5px; color: #888780; margin: 0 0 4px; }
+  .toplink {
+    background: #fff;
+    border: 1px dashed #d3d1c7;
+    border-radius: 8px;
+    padding: 11px 16px;
+    margin: 0 0 26px;
+    font-size: 13px;
+    color: #444441;
+  }
   .footer {
     margin-top: 56px;
     padding-top: 20px;
@@ -173,6 +191,8 @@
       <p>用手机或电脑浏览器访问：</p>
       <p><span class="url">https://www.pushplus.plus/</span></p>
       <div class="tip">地址很好记：<b>push</b>（推送）<b>plus</b>（加）<b>.plus</b>，连起来就是 <code>pushplus.plus</code>。</div>
+      <img class="shot" src="docs/images/01-open-site.jpg" alt="PushPlus 官网首页，右上角为登录入口">
+      <p class="shot-cap">▲ 官网首页真实截图：右上角「登录」就是入口</p>
     </div>
   </div>
 
@@ -181,6 +201,8 @@
     <div class="step-body">
       <p>点击页面右上角的「<b>登录</b>」，会弹出一个二维码。用<b>微信扫一扫</b>扫描它，手机上点确认即可登录。</p>
       <div class="tip">扫码的作用有两个：① 确认你是本人；② 把你的账号和这个微信绑定，以后消息才能发到这个微信上。</div>
+      <img class="shot" src="docs/images/02-scan-qr.jpg" alt="扫码登录页">
+      <p class="shot-cap">▲ 扫码登录页真实截图：微信扫一扫 → 手机点「确认登录」</p>
     </div>
   </div>
 
@@ -192,6 +214,8 @@
       <p><span class="url">https://verify.pushplus.plus/</span></p>
       <p>输入手机号 → 收到验证码 → 填入 → 完成。</p>
       <div class="warn">跳过这一步的话，脚本调用接口时会返回 <code>用户令牌不正确</code> —— 不是 Token 拿错了，而是实名没做完。</div>
+      <img class="shot" src="docs/images/03-verify-phone.png" alt="手机号验证页界面示意">
+      <p class="shot-cap">▲ 手机号验证页（界面示意图，需登录后才能访问，故按实际控件绘制）</p>
     </div>
   </div>
 
@@ -203,17 +227,20 @@
       <p>它长这样（下面是<b>示例，不是真的</b>）：</p>
       <p><span class="url">a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6</span></p>
       <div class="tip">找不到的话，也可以看「个人中心」或「用户中心」页面，Token 一般会显示在那里。</div>
+      <img class="shot" src="docs/images/04-copy-token.png" alt="一对一推送页面界面示意">
+      <p class="shot-cap">▲ 一对一推送页（界面示意图）：Token 就在这一栏，点右侧「复制」</p>
     </div>
   </div>
 
   <div class="step">
     <div class="step-head"><span class="step-num">5</span>把 Token 发给我</div>
     <div class="step-body">
-      <p>直接把这串字符粘贴到对话里发给我就行。我会：</p>
+      <p>打开项目目录下的 <code>config.json</code>，把 Token 填进 <code>notify.token</code> 字段：</p>
+      <p><span class="url">{ "notify": { "enable": true, "channel": "pushplus", "token": "把这里换成你自己的 Token" } }</span></p>
+      <p>保存后依次执行两条命令自检：</p>
       <ol>
-        <li>写进你本机的配置文件（<code>config.json</code> 的 <code>notify.token</code> 字段）</li>
-        <li>立刻发一条测试通知，让你亲眼看到微信收到消息</li>
-        <li>再模拟一次「签到失败」，验证整条链路真的通</li>
+        <li><code>node checkin.js --notify-test</code> —— 立刻发一条测试推送，微信应收到消息</li>
+        <li><code>node checkin.js --simulate-failure</code> —— 模拟一次签到失败，验证「失败 → 通知」整条链路</li>
       </ol>
     </div>
   </div>
@@ -276,10 +303,17 @@
     </tr>
   </table>
   <div class="tip">换句话说：<b>它只在你该知道的时候才响。</b>平时是完全安静的。</div>
+  <img class="shot" src="docs/images/05-wechat-notify.png" alt="微信收到签到失败通知的效果示意">
+  <p class="shot-cap">▲ 你会收到的消息长这样（效果示意图，实际文案以脚本当次输出为准）</p>
+
+  <div class="toplink">
+    📌 本页是<b>网页版</b>（下载到本地后双击打开最方便）。<br>
+    在 GitHub 上在线阅读请走 Markdown 版：<code>docs/如何获取PushPlus令牌.md</code>（GitHub 会自动渲染图片）。
+  </div>
 
   <div class="footer">
     每日签到助手 · 通知通道配置说明<br>
-    当前配置：PushPlus（等待填入 Token）
+    配图：图 1 / 图 2 为 PushPlus 官网真实截图；图 3 / 图 4 / 图 5 为界面与效果示意图
   </div>
 
 </div>
