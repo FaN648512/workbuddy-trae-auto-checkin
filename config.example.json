@@ -1,0 +1,55 @@
+{
+  "_说明": "配置模板。复制为 config.json 后按需修改；接口地址与开关都可改，改完直接生效，无需动代码。",
+  "endpoints": {
+    "workbuddyCheckin": "https://copilot.tencent.com/v2/billing/meter/daily-checkin",
+    "workbuddyRefresh": "https://copilot.tencent.com/v2/auth/token/refresh",
+    "traeStatus": "https://api.trae.cn/trae/api/v2/ug/checkin_credits/status",
+    "traeClaim": "https://api.trae.cn/trae/api/v2/ug/checkin_credits/claim",
+    "traeExchange": "https://api.trae.com.cn/cloudide/api/v3/trae/oauth/ExchangeToken"
+  },
+  "trae": {
+    "products": [
+      "TRAE SOLO CN",
+      "Trae CN",
+      "TRAE SOLO",
+      "Trae Solo CN",
+      "Trae",
+      "TRAE"
+    ],
+    "clientId": "en1oxy7wnw8j9n",
+    "refreshAheadMinutes": 60,
+    "writeBack": true
+  },
+  "workbuddy": {
+    "tokenFiles": [
+      "%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/Auth/workbuddy-desktop.info",
+      "%LOCALAPPDATA%/WorkBuddyExtension/Data/Public/Auth/workbuddy-desktop.info",
+      "%LOCALAPPDATA%/WorkBuddy/Data/Public/Auth/workbuddy-desktop.info",
+      "%APPDATA%/WorkBuddy/Data/Public/Auth/workbuddy-desktop.info",
+      "%APPDATA%/CodeBuddy/Data/Public/Auth/workbuddy-desktop.info"
+    ],
+    "appExe": "",
+    "refreshAheadMinutes": 60,
+    "tryRefreshEndpoint": false,
+    "launchAppOnExpiry": true,
+    "launchWaitSeconds": 75
+  },
+  "retry": {
+    "network": 3,
+    "networkDelayMs": 2500,
+    "traeBusy": 3,
+    "traeBusyDelayMs": [
+      15000,
+      25000
+    ]
+  },
+  "notify": {
+    "_说明": "type 可选：pushplus（微信推送）| serverchan（Server酱）| wecom（企业微信群机器人）| feishu | bark | none。pushplus/serverchan 只填 token；wecom/feishu 只填 url。留空即不推送，不影响签到。",
+    "_触发规则": "仅当【签到未全部成功】且【WorkBuddy 处于登录状态】时推送（onFailure=true 时生效）；onSuccess=true 则每天成功也推。",
+    "type": "none",
+    "url": "",
+    "token": "",
+    "onSuccess": false,
+    "onFailure": true
+  }
+}
