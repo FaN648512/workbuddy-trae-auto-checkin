@@ -187,9 +187,11 @@ node checkin.js --status   # 只查询余额，不领取
 ```powershell
 $name = 'DailyCheckin_WorkBuddy_Trae'
 $dir  = (Get-Location).Path
-$cmd  = Join-Path $dir 'run_checkin.cmd'
+$vbs  = Join-Path $dir 'run_checkin_hidden.vbs'
+$wsh  = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
-$action    = New-ScheduledTaskAction -Execute $cmd -WorkingDirectory $dir
+# 经 wscript 启动 = 全程无窗口（原因见下方「为什么用隐藏窗口启动」）
+$action    = New-ScheduledTaskAction -Execute $wsh -Argument ('"' + $vbs + '"') -WorkingDirectory $dir
 $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
                -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
                -MultipleInstances IgnoreNew
@@ -218,6 +220,22 @@ Get-ScheduledTaskInfo -TaskName 'DailyCheckin_WorkBuddy_Trae' | Select-Object Ne
 > [!TIP]
 > `LastTaskResult = 0` 表示成功。任务注册后**无需任何手动操作**：只要开机、登录进桌面、联网，
 > 当天必然签到一次。脚本幂等，多次触发不会重复领取。
+
+#### 为什么用隐藏窗口启动（`run_checkin_hidden.vbs`）
+
+计划任务以 `InteractiveToken` 身份运行 `.cmd` 时，Windows 会弹出一个**可见的控制台窗口**。
+一旦这个窗口被误关（或会话提前结束），`cmd.exe → node.exe` 整棵进程树都会被终止，
+退出码为 `3221225786`（`0xC000013A` = `STATUS_CONTROL_C_EXIT`），
+而且**日志一行都不会留下**——看起来就像"任务根本没跑"，排查时极易误判方向。
+
+用一个 VBS 包一层即可彻底避免。`WScript.Shell.Run(cmd, 0, True)` 里：
+
+| 参数 | 值 | 作用 |
+|---|---|---|
+| 窗口样式 | `0` | **隐藏窗口**，根本不会创建控制台，也就没有东西可被关掉 |
+| 等待结束 | `True` | 计划任务保持 `Running` 直到签到真正结束，`LastTaskResult` = 脚本真实退出码（`0` 全成功 / `2` 有平台失败） |
+
+该 VBS 内容为**纯 ASCII**，真实路径由 `WScript.ScriptFullName` 在运行时推导，不硬编码中文目录。
 
 ---
 
@@ -317,6 +335,7 @@ flowchart TD
 workbuddy-trae-auto-checkin/
 ├── checkin.js                    # 主脚本（零依赖单文件，全部逻辑在此）
 ├── run_checkin.cmd               # Windows 启动器（自动探测 Node 路径）
+├── run_checkin_hidden.vbs        # 静默启动器（经 wscript 运行，无控制台窗口）
 ├── config.example.json           # 配置模板（复制为 config.json 使用）
 ├── .gitignore                    # 密钥与运行时数据隔离规则
 ├── LICENSE                       # MIT
