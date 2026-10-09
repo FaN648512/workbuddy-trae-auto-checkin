@@ -80,6 +80,15 @@ const DEFAULT_CONFIG = {
     // 这是目前唯一 100% 可用的 WorkBuddy 自动续期手段。
     launchAppOnExpiry: true,
     launchWaitSeconds: 75,
+    // ★ 方案 B：客户端自 5.7.7（2026-10-08 更新）起把登录凭证改为信封加密存储
+    //   （accessToken 从明文字符串变成 {$wbEncrypted:1, envelope:'...'}），
+    //   磁盘上再也拿不到明文 token，读文件的老路彻底失效。
+    //   这里不破译该加密，而是改从「运行中的客户端进程内存」只读地取出它
+    //   自己已解密好的 accessToken（由同目录的 harvest_wb.py 实现），
+    //   校验通过后仅在内存里用于签到，不落盘。
+    harvestFromMemory: true,
+    harvestPython: '', // 留空则自动探测常见安装路径；也可填 Python 绝对路径
+    harvestTimeoutSeconds: 240,
   },
   retry: {
     network: 3,
@@ -577,15 +586,28 @@ function readWorkBuddyAuth() {
     );
   }
   const data = readJSON(file);
-  const token = data.auth && data.auth.accessToken;
+
+  // 5.7.7+（2026-10-08 更新）客户端把凭证改成了信封加密对象：
+  //   accessToken 从「明文字符串」变成 {$wbEncrypted:1, envelope:'...'}
+  // 此时磁盘上已无明文 token —— 标记出来，由上层改走「内存提取」（方案 B）。
+  let token = data.auth && data.auth.accessToken;
+  let encrypted = false;
+  if (token && typeof token === 'object') {
+    encrypted = !!(token.$wbEncrypted || token.envelope);
+    token = null;
+  }
+  const rawRefresh = data.auth && data.auth.refreshToken;
+  const refreshToken = typeof rawRefresh === 'string' ? rawRefresh : '';
+
   let expiresAt = (data.auth && data.auth.expiresAt) || 0;
   if (expiresAt > 1e12) expiresAt = Math.floor(expiresAt); // 本来就是毫秒
   else if (expiresAt) expiresAt = expiresAt * 1000;
   return {
     ...data,
-    token,
+    token: token || null,
+    encrypted,
     expiresAt,
-    refreshToken: (data.auth && data.auth.refreshToken) || '',
+    refreshToken,
     file,
     nickname: (data.account && (data.account.nickname || data.account.phoneNumber)) || '未命名',
   };
@@ -611,10 +633,13 @@ async function workbuddyTryRefresh(auth) {
   throw new Error(`刷新接口不可用（HTTP ${r.status}）`);
 }
 
-/** 拉起 WorkBuddy 客户端，让它自己刷新登录态文件，然后轮询等待新凭证 */
-async function workbuddyLaunchAndWait(auth, state) {
+/** 只负责「拉起 WorkBuddy 客户端」这一件事（含每日限频），成功拉起返回 true */
+async function workbuddyLaunchOnly(state) {
   const exe = expand(CFG.workbuddy.appExe);
-  if (!exe || !fs.existsSync(exe)) return null;
+  if (!exe || !fs.existsSync(exe)) {
+    if (VERBOSE) log(`  · 未找到客户端可执行文件：${exe}`);
+    return false;
+  }
 
   // 限频：一天内最多拉起 2 次，避免凭证彻底失效时多次弹窗打扰
   const MAX_LAUNCH_PER_DAY = 2;
@@ -623,32 +648,38 @@ async function workbuddyLaunchAndWait(auth, state) {
   const lw = (state.workbuddy && state.workbuddy.launch) || {};
   if (lw.date === today && (lw.count || 0) >= MAX_LAUNCH_PER_DAY) {
     log(`  ⏭ 今日已尝试拉起客户端 ${lw.count} 次，不再重复拉起`);
-    return null;
+    return false;
   }
   if (lw.at && Date.now() - lw.at < MIN_GAP_MS) {
     log('  ⏭ 距上次拉起客户端不足 3 小时，跳过');
-    return null;
+    return false;
   }
 
-  log(`  🚀 尝试拉起 WorkBuddy 客户端自动刷新登录态…`);
+  log('  🚀 尝试拉起 WorkBuddy 客户端…');
   try {
     const child = spawn(exe, [], { detached: true, stdio: 'ignore' });
     child.unref();
   } catch (e) {
     log(`  ⚠ 启动客户端失败：${e.message}`);
-    return null;
+    return false;
   }
   state.workbuddy = Object.assign({}, state.workbuddy, {
     launch: { date: today, count: lw.date === today ? (lw.count || 0) + 1 : 1, at: Date.now() },
   });
   saveState(state);
+  return true;
+}
+
+/** 拉起客户端 → 轮询等它把登录态文件刷新出新凭证（明文时代的老路径，保留作兼容） */
+async function workbuddyLaunchAndWait(auth, state) {
+  if (!(await workbuddyLaunchOnly(state))) return null;
 
   const deadline = Date.now() + (CFG.workbuddy.launchWaitSeconds || 75) * 1000;
   while (Date.now() < deadline) {
     await sleep(5000);
     try {
       const again = readWorkBuddyAuth();
-      if (again.expiresAt && again.expiresAt > Date.now() + 60 * 1000 && again.expiresAt !== auth.expiresAt) {
+      if (again.token && again.expiresAt && again.expiresAt > Date.now() + 60 * 1000 && again.expiresAt !== auth.expiresAt) {
         log('  ✅ 客户端已刷新登录态');
         return again;
       }
@@ -658,6 +689,116 @@ async function workbuddyLaunchAndWait(auth, state) {
   }
   log('  ⚠ 等待客户端刷新超时');
   return null;
+}
+
+/* ------------------------------------------------------------------
+ * 方案 B：从运行中的客户端内存里提取已解密的 accessToken
+ * ------------------------------------------------------------------
+ * 客户端自 5.7.7 起用信封加密保存凭证，磁盘上没有明文 token 了。
+ * 我们不去破译那套加密，而是只读地读取「客户端进程自己已经解密好」的
+ * 凭证 —— 由同目录的 harvest_wb.py 用 Win32 ReadProcessMemory 实现，
+ * 取到后用只读接口校验，再直接交给签到流程使用（不写盘）。
+ * ------------------------------------------------------------------ */
+
+/** 探测可用的 Python 解释器（先 config，再常见安装路径） */
+function findPython() {
+  const cands = [];
+  if (CFG.workbuddy.harvestPython) cands.push(expand(CFG.workbuddy.harvestPython));
+  cands.push(
+    '%LOCALAPPDATA%/Programs/Python/Python313/python.exe',
+    '%LOCALAPPDATA%/Programs/Python/Python312/python.exe',
+    '%LOCALAPPDATA%/Programs/Python/Python311/python.exe',
+    '%USERPROFILE%/.workbuddy/binaries/python/versions/3.13.12/python.exe',
+    '%USERPROFILE%/.workbuddy/binaries/python/versions/3.13.2-full/python.exe',
+    'C:/Python313/python.exe',
+    'C:/Python312/python.exe',
+    'C:/Python311/python.exe'
+  );
+  for (const c of cands) {
+    const p = expand(c);
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** 运行外部命令并捕获 stdout（内置超时与收尾保护） */
+function runCapture(exe, args, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    let out = '';
+    let err = '';
+    let child;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      try {
+        if (child) child.kill();
+      } catch (e) {
+        /* 忽略 */
+      }
+      finish({ ok: false, out, err, reason: 'timeout' });
+    }, timeoutMs);
+    try {
+      child = spawn(exe, args, { windowsHide: true });
+    } catch (e) {
+      finish({ ok: false, out, err: String(e.message), reason: 'spawn' });
+      return;
+    }
+    child.stdout.on('data', (d) => {
+      out += d.toString();
+    });
+    child.stderr.on('data', (d) => {
+      err += d.toString();
+    });
+    child.on('error', (e) => finish({ ok: false, out, err: String(e.message), reason: 'error' }));
+    child.on('close', (code) => finish({ ok: code === 0, out, err, reason: 'exit' + code }));
+  });
+}
+
+/**
+ * 从运行中的客户端进程内存里收割一份可用的 WorkBuddy 凭证。
+ * 成功返回 { token, tokenTail, activityEnd, pid }，否则 null。
+ */
+async function harvestWorkBuddyToken() {
+  if (!CFG.workbuddy.harvestFromMemory) return null;
+  const script = path.join(APP_DIR, 'harvest_wb.py');
+  if (!fs.existsSync(script)) {
+    if (VERBOSE) log('  · 未找到 harvest_wb.py，跳过内存提取');
+    return null;
+  }
+  const py = findPython();
+  if (!py) {
+    log('  ⚠ 未找到 Python 解释器，无法从客户端内存提取凭证（可在 config.json 的 workbuddy.harvestPython 指定路径）');
+    return null;
+  }
+  if (VERBOSE) log(`  · 使用 Python：${py}`);
+  log('  🧠 正在从运行中的 WorkBuddy 客户端提取登录凭证（只读内存，不破译加密）…');
+
+  const r = await runCapture(py, [script], (CFG.workbuddy.harvestTimeoutSeconds || 240) * 1000);
+  if (!r.ok) {
+    const tail = (r.err || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
+    if (VERBOSE) log(`  · 内存提取未成功（${r.reason}）${tail ? '：' + tail : ''}`);
+    return null;
+  }
+  const line = r.out.trim().split('\n').filter(Boolean).pop();
+  if (!line) return null;
+  let j = null;
+  try {
+    j = JSON.parse(line);
+  } catch (e) {
+    return null;
+  }
+  if (!j || !j.token) return null;
+  return {
+    token: String(j.token),
+    tokenTail: String(j.tokenTail || String(j.token).slice(-6)),
+    activityEnd: j.end_time || '',
+    pid: j.pid,
+  };
 }
 
 /* ==================================================================
@@ -819,11 +960,46 @@ async function doWorkBuddy(state, problems) {
     problems.push('WorkBuddy：' + e.message);
     return { ok: false, msg: e.message, needAction: true, loggedIn: false };
   }
+  // ---- 凭证来源 ----
+  // 5.7.7+ 客户端把凭证信封加密存盘，磁盘上已无明文 token → 方案 B：内存提取
   if (!auth.token) {
-    const m = '登录文件里没有 accessToken，请重新登录 WorkBuddy';
-    log('  ❌ ' + m);
-    problems.push('WorkBuddy：' + m);
-    return { ok: false, msg: m, needAction: true, loggedIn: false };
+    if (auth.encrypted) {
+      log('  ℹ 客户端把登录凭证加密存盘了（磁盘上无明文），改用「内存提取」获取凭证');
+    }
+    let h = await harvestWorkBuddyToken();
+
+    // 客户端没开着 → 先拉起一次，再等它把凭证装载进内存
+    if (!h && CFG.workbuddy.launchAppOnExpiry) {
+      if (await workbuddyLaunchOnly(state)) {
+        for (let i = 0; i < 3 && !h; i++) {
+          await sleep(8000);
+          h = await harvestWorkBuddyToken();
+        }
+      }
+    }
+
+    if (!h) {
+      const m = auth.encrypted
+        ? '客户端把登录凭证加密存盘了，且未能从运行中的客户端内存里取到凭证（请确认 WorkBuddy 客户端正在运行；若已在运行仍失败，检查本机 Python 环境，或在 config.json 里指定 workbuddy.harvestPython）'
+        : '登录文件里没有 accessToken，请重新登录 WorkBuddy';
+      log('  ❌ ' + m);
+      problems.push('WorkBuddy：' + m);
+      return { ok: false, msg: m, needAction: true, loggedIn: !!auth.encrypted };
+    }
+
+    auth.token = h.token;
+    // 该凭证刚用只读接口验证过，本次运行内必然有效；给个短有效期，
+    // 免得又被判成「快过期」再去走（对加密凭证已无效的）刷新分支。
+    auth.expiresAt = Date.now() + 12 * 3600 * 1000;
+    state.workbuddy = Object.assign({}, state.workbuddy, {
+      accessTokenTail: h.tokenTail,
+      source: 'memory-harvest',
+      harvestedAt: Date.now(),
+      activityEnd: h.activityEnd || '',
+      fromPid: h.pid,
+    });
+    saveState(state);
+    log(`  ✅ 已从客户端内存取到凭证（尾号 ${h.tokenTail}${h.activityEnd ? '，活动截止 ' + h.activityEnd : ''}）`);
   }
 
   const ahead = (CFG.workbuddy.refreshAheadMinutes || 60) * 60 * 1000;
@@ -1099,12 +1275,21 @@ function selfTest() {
     if (!f) throw new Error('未找到 workbuddy-desktop.info');
     return f;
   });
-  check('WorkBuddy 凭证有效期', () => {
+  check('WorkBuddy 凭证有效性', () => {
     const a = readWorkBuddyAuth();
+    if (!a.token && a.encrypted) {
+      // 5.7.7+ 正常现象：凭证加密存盘，签到时会改从运行中的客户端内存提取
+      return '客户端已加密存盘，签到将走「内存提取」（需客户端在运行）';
+    }
     if (!a.token) throw new Error('无 accessToken');
     const d = Math.floor((a.expiresAt - Date.now()) / 86400000);
     if (d < 0) throw new Error(`已过期 ${-d} 天，需要登录客户端`);
     return `账号 ${a.nickname}，剩余 ${d} 天`;
+  });
+  check('Python 解释器（内存提取所需）', () => {
+    const py = findPython();
+    if (!py) throw new Error('未找到 Python，无法从客户端内存提取凭证');
+    return py;
   });
   check('WorkBuddy 客户端可执行文件', () => {
     const exe = expand(CFG.workbuddy.appExe);

@@ -32,7 +32,11 @@
     "refreshAheadMinutes": 60,
     "tryRefreshEndpoint": false,
     "launchAppOnExpiry": true,
-    "launchWaitSeconds": 75
+    "launchWaitSeconds": 75,
+    "_方案B说明": "客户端 5.7.7+ 把登录凭证加密存盘，磁盘上已无明文 accessToken。此时脚本改从【运行中的客户端进程内存】只读地取出它自己已解密好的凭证（harvest_wb.py 实现），不破译加密、不落盘。",
+    "harvestFromMemory": true,
+    "harvestPython": "",
+    "harvestTimeoutSeconds": 240
   },
   "retry": {
     "network": 3,
