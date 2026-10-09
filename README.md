@@ -89,6 +89,7 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 
 | 层 | 触发条件 | 动作 |
 |:--:|---|---|
+| **L0** | 磁盘凭证已被客户端**加密存盘**（5.7.7+） | 只读地读取客户端进程内存里它**已解密好**的凭证 |
 | **L1** | 凭证有效 | 直接签到 |
 | **L2** | 剩余有效期 < 60 分钟 或 已过期 | 用 refreshToken 自动换新 |
 | **L3** | 续期成功 | 回写登录态文件，客户端不掉线 |
@@ -97,8 +98,33 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 | **L6** | 无法自动恢复 | 落 `NEED_ACTION.txt` + 推送通知 + 退出码 `2` |
 | **L7** | 登录文件路径变更 | 自动扫描候选目录重新发现 |
 
+> [!IMPORTANT]
+> **WorkBuddy 5.7.7（2026-10-08 更新）把登录凭证改成了加密存盘**
+>
+> 更新前，`workbuddy-desktop.info` 里 `auth.accessToken` 是**明文字符串**，脚本直接读来用即可。
+> 更新后它变成了信封加密对象 —— 长这样：
+>
+> ```json
+> "accessToken": { "$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MS..." }
+> ```
+>
+> 磁盘上**再也没有明文 token**，老路子彻底失效（表现为签到 401，且日志误报「凭证已失效」——
+> 其实你的登录好好的）。
+>
+> **本项目的处理方式（L0）：不破译那套加密**，而是改从**正在运行的客户端进程内存**里，
+> 只读地取出客户端**自己已经解密好**的 accessToken，用一个只读接口校验通过后，
+> 直接在内存里用于签到。
+>
+> 这样做的好处是：
+> - **不与厂商的加密做对抗** —— 加密算法怎么变都不影响，因为取的是解密后的结果；
+> - **凭证不落盘** —— 全程只在内存中流转，磁盘上不会多出任何明文 token 文件；
+> - **只读操作** —— 仅 `OpenProcess(PROCESS_VM_READ)` + `ReadProcessMemory`，绝不写入目标进程。
+>
+> 代价是**需要 WorkBuddy 客户端处于运行状态**（客户端没开时脚本会先把它拉起来再取），
+> 且需要本机有 Python 3（仅用标准库 `ctypes`，无需 pip 安装任何东西）。
+
 > [!NOTE]
-> **为什么续期后必须回写？**
+> **为什么 Trae 续期后必须回写？**
 > 实测发现 Trae 的 `refreshToken` 会**轮换**——续期后旧值立即失效。
 > 如果只把新凭证存在工具内部而不回写平台文件，Trae 客户端下次启动会要求重新登录。
 > 本项目用与解密对称的算法重新加密写回，并经往返验证：密文长度 2464 字节，与原值完全一致。
@@ -140,8 +166,12 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 |---|---|
 | 系统 | Windows 10 / 11 |
 | 运行时 | Node.js 18 或更高（**无需 `npm install`**） |
+| 运行时（WorkBuddy 部分） | Python 3.x（**仅用标准库 `ctypes`，无需 pip 安装**）。用于从客户端内存提取凭证；不签 WorkBuddy 时可不需要。脚本会自动探测常见安装路径，也可在配置里指定 |
 | 账号 | WorkBuddy 与（或）Trae 客户端已在本机登录 |
 | 注意 | 脚本以你的身份读取用户目录下的登录态文件，因此**需登录进桌面**才能运行 |
+
+> [!TIP]
+> 想知道环境是否就绪，直接跑 `node checkin.js --self-test`——它会连同 Python 解释器一起检查。
 
 ### 步骤 1 · 获取代码
 
@@ -261,6 +291,9 @@ cp config.example.json config.json
 | `trae.refreshAheadMinutes` | `60` | 提前多少分钟触发续期 |
 | `workbuddy.launchAppOnExpiry` | `true` | 凭证过期时是否拉起客户端刷新登录态 |
 | `workbuddy.appExe` | 空 | WorkBuddy 可执行文件路径（自动拉起时需要） |
+| `workbuddy.harvestFromMemory` | `true` | 磁盘凭证被客户端加密时（5.7.7+），改从运行中的客户端进程内存提取 |
+| `workbuddy.harvestPython` | 空 | Python 解释器绝对路径；留空则自动探测常见安装位置 |
+| `workbuddy.harvestTimeoutSeconds` | `240` | 单次内存提取的时间上限（秒） |
 | `retry.network` | `3` | 网络层重试次数 |
 | `retry.traeBusy` | `3` | Trae 限流（`9074`）重试次数 |
 | `notify.type` | `none` | `pushplus` / `serverchan` / `wecom` / `feishu` / `bark` / `none` |
@@ -304,7 +337,10 @@ cp config.example.json config.json
 ```mermaid
 flowchart TD
     A["Windows 计划任务<br/>07:30 / 20:30 / 登录后 3 分钟"] --> B["读取平台登录态文件"]
-    B --> C{"凭证是否有效?"}
+    B --> B0{"磁盘上是明文凭证吗?"}
+    B0 -->|"否（5.7.7+ 已加密）"| B1["从客户端进程内存<br/>只读取回已解密的凭证"]
+    B0 -->|"是"| C
+    B1 --> C{"凭证是否有效?"}
     C -->|"有效"| E["调用签到接口"]
     C -->|"剩余 &lt;60 分钟 / 已过期"| D["自动续期"]
     D --> D1["Trae：refreshToken 换新<br/>加密回写 storage.json"]
@@ -320,12 +356,19 @@ flowchart TD
     style G fill:#1a7f37,color:#fff
     style I fill:#cf222e,color:#fff
     style D fill:#9a6700,color:#fff
+    style B1 fill:#0969da,color:#fff
 ```
 
 **关于 WorkBuddy 的续期方式**：应用内置的刷新接口（`POST /v2/auth/token/refresh`）
 在公网各域名下均返回 `404 Route Not Found`——它运行在专有网关上。
 因此本项目改用唯一可靠的手段：凭证快过期时拉起 `WorkBuddy.exe`，由客户端自身完成刷新。
 该动作带限频保护（一天最多 2 次、间隔 ≥3 小时），避免反复弹窗。
+
+**关于客户端加密后的凭证（L0）**：5.7.7 起凭证被信封加密写盘，脚本读不到明文。
+此时会调用 `harvest_wb.py`：它枚举本机的 `WorkBuddy.exe` 进程（主进程优先），
+用 `VirtualQueryEx` + `ReadProcessMemory` **只读**遍历已提交的可读内存区，
+按 JWT 形态捞出候选字符串，逐个用只读的签到状态接口校验，**第一个通过校验的就是有效凭证**。
+整个过程不修改目标进程、不写任何文件、不打印凭证内容。
 
 ---
 
@@ -334,6 +377,7 @@ flowchart TD
 ```text
 workbuddy-trae-auto-checkin/
 ├── checkin.js                    # 主脚本（零依赖单文件，全部逻辑在此）
+├── harvest_wb.py                 # 凭证内存提取器（仅标准库 ctypes，供 L0 调用）
 ├── run_checkin.cmd               # Windows 启动器（自动探测 Node 路径）
 ├── run_checkin_hidden.vbs        # 静默启动器（经 wscript 运行，无控制台窗口）
 ├── config.example.json           # 配置模板（复制为 config.json 使用）
@@ -383,6 +427,29 @@ workbuddy-trae-auto-checkin/
   之后 `NEED_ACTION.txt` 会自动清除。
 
 不确定原因时执行 `node checkin.js --diagnose`，它会直接告诉你哪个路径、什么错误码。
+</details>
+
+<details>
+<summary><b>日志说「客户端把登录凭证加密存盘了」，是出问题了吗？</b></summary>
+
+不是，这是 **5.7.7 之后的正常现象**。客户端把 `accessToken` 改成加密对象存盘，
+磁盘上已经没有明文了，所以脚本改走「内存提取」——从正在运行的客户端进程里
+只读地取出它自己已解密好的凭证。
+
+需要满足两个条件：
+
+1. **WorkBuddy 客户端在运行**（没开的话脚本会先把它拉起来，沿用限频：一天 ≤2 次）；
+2. **本机有 Python 3**（只用标准库，不需要 `pip install`）。
+
+如果这条反复失败，用 `node checkin.js --self-test` 看「Python 解释器」那一项，
+必要时在 `config.json` 里显式指定：
+
+```json
+{ "workbuddy": { "harvestPython": "C:/Python311/python.exe" } }
+```
+
+> 若客户端是**以管理员身份**运行的，而计划任务不是，Windows 会拒绝读取它的内存。
+> 这种情形下请把计划任务也设为「使用最高权限运行」。
 </details>
 
 <details>
