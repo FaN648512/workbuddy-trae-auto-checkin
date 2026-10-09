@@ -9,6 +9,7 @@
 auto-renews expired credentials, writes the refreshed session back, and only pings you on a real failure.*
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)](#)
+[![Version](https://img.shields.io/badge/version-v1.2.0-2ea44f?style=flat-square)](#更新日志)
 [![Node](https://img.shields.io/badge/Node.js-18%2B-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen?style=flat-square)](#)
 [![Targets](https://img.shields.io/badge/targets-WorkBuddy%20%2B%20Trae-8A2BE2?style=flat-square)](#)
@@ -16,6 +17,13 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](#贡献指南)
 
 </div>
+
+---
+
+> [!IMPORTANT]
+> **v1.2.0 已适配 WorkBuddy 5.7.7 的凭证加密变更（2026-10-09）**
+> 客户端把登录凭证改为加密存盘后，旧方式会签到失败。本版本改用「只读进程内存提取」取回凭证，
+> 不破译厂商加密。**详见 [更新日志](CHANGELOG.md#120---2026-10-09)。**
 
 ---
 
@@ -33,6 +41,7 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 - [使用场景](#使用场景)
 - [常见问题](#常见问题)
 - [路线图](#路线图)
+- [更新日志](#更新日志)
 - [安全说明](#安全说明)
 - [贡献指南](#贡献指南)
 - [免责声明](#免责声明)
@@ -73,7 +82,7 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 - **零第三方依赖** —— 仅使用 Node 内置模块，无需 `npm install`
 - **凭证自动续期** —— accessToken 剩余有效期低于阈值时自动换新
 - **加密回写** —— 续期后的新凭证按原算法加密写回，客户端不会掉登录
-- **七层自愈** —— 覆盖凭证过期、服务限流、网络抖动、路径变更、瞬时读写抖动
+- **八层自愈** —— 覆盖凭证加密存盘、凭证过期、服务限流、网络抖动、路径变更、瞬时读写抖动
 - **幂等运行** —— 一天触发多次只签到一次，重复运行零副作用
 - **条件化通知** —— 支持 PushPlus / Server酱 / 企业微信 / 飞书 / Bark 五种通道
 - **完整诊断链** —— 离线自检、环境诊断、模拟失败、通知测试
@@ -84,7 +93,7 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 
 ## 自愈机制
 
-签到失败的原因很多，本项目把它们整理为**七层递进**的处理策略。绝大多数异常在前五层内自动消化，
+签到失败的原因很多，本项目把它们整理为**八层递进**的处理策略。绝大多数异常在前五层内自动消化，
 你只会感知到「签到了」或「收到一条真失败通知」。
 
 | 层 | 触发条件 | 动作 |
@@ -188,7 +197,7 @@ node checkin.js --diagnose
 ```
 
 > [!TIP]
-> 第一次用建议先跑 `node checkin.js --self-test`（10 项离线自检，**不发任何网络请求**），
+> 第一次用建议先跑 `node checkin.js --self-test`（11 项离线自检，**不发任何网络请求**），
 > 确认代码与环境无误后再执行真正的签到。
 
 期望输出（路径会因机器而异）：
@@ -323,7 +332,7 @@ cp config.example.json config.json
 |---|---|
 | *(无)* | 执行签到 |
 | `--status` | 只查询状态与余额，不领取 |
-| `--self-test` | 离线自检 10 项，**不发任何网络请求** |
+| `--self-test` | 离线自检 11 项，**不发任何网络请求** |
 | `--diagnose` | 环境诊断：打印候选路径与错误码，不签到、不通知 |
 | `--verbose` | 输出调试细节（仍不打印 token） |
 | `--notify-test` | 发送一条测试通知，验证推送通道 |
@@ -496,13 +505,27 @@ workbuddy-trae-auto-checkin/
 
 - [x] 双平台签到（WorkBuddy + Trae）
 - [x] Trae 凭证自动续期 + 加密回写
-- [x] 七层自愈机制
+- [x] 八层自愈机制
 - [x] 五通道通知 + 条件化推送
 - [x] 环境诊断与离线自检
+- [x] 计划任务静默运行（无控制台窗口）
+- [x] **适配 WorkBuddy 凭证加密存盘（`v1.2.0`）**
 - [ ] 支持 macOS / Linux 计划任务（launchd / systemd）
 - [ ] 多账号支持
 - [ ] 连续签到天数统计与月度报表
 - [ ] 可选 GitHub Actions 云端签到
+
+---
+
+## 更新日志
+
+完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.0**。
+
+| 版本 | 日期 | 要点 |
+|---|---|---|
+| **v1.2.0** | 2026-10-09 | **适配 WorkBuddy 5.7.7 凭证加密** —— 新增只读进程内存提取，不破译厂商加密 |
+| v1.1.0 | 2026-09-18 | 计划任务改为全程无窗口静默运行，消除窗口被误关导致的漏签 |
+| v1.0.0 | 2026-09-14 | 首次发布 —— 双平台签到、自愈机制、加密回写、条件化通知 |
 
 ---
 
@@ -584,6 +607,6 @@ git push origin feature/your-feature
 
 **如果这个项目帮你省下了每天那几分钟，欢迎点个 ⭐**
 
-[报告问题](https://github.com/FaN648512/workbuddy-trae-auto-checkin/issues) · [提交建议](https://github.com/FaN648512/workbuddy-trae-auto-checkin/issues) · [查看优化日志](项目优化日志.md)
+[报告问题](https://github.com/FaN648512/workbuddy-trae-auto-checkin/issues) · [提交建议](https://github.com/FaN648512/workbuddy-trae-auto-checkin/issues) · [更新日志](CHANGELOG.md) · [查看优化日志](项目优化日志.md)
 
 </div>
