@@ -36,6 +36,8 @@ MEM_COMMIT = 0x1000
 PAGE_GUARD = 0x100
 PAGE_NOACCESS = 0x01
 READABLE = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80}
+MEM_PRIVATE = 0x20000          # 堆 / 栈：凭证实际所在
+MEM_IMAGE = 0x1000000          # 可执行映像（DLL/EXE 代码），绝不含凭证
 
 
 class MBI(ctypes.Structure):
@@ -61,6 +63,7 @@ CTX = ssl.create_default_context()
 PROCESS_NAMES = ("WorkBuddy.exe",)
 CHUNK = 1 << 20
 DEADLINE_SECONDS = 180          # 总扫描时限，避免异常情况下卡死
+PER_PROCESS_SECONDS = 60        # 单个进程的扫描上限，防止一个巨无霸吃光总预算
 MAX_REGION = 256 << 20          # 单块内存上限
 
 
@@ -111,11 +114,18 @@ def list_processes():
 
 
 # ---------------------------------------------------------------- 内存扫描
-def scan_pid(pid, deadline):
-    """只读扫描指定进程，返回候选凭证字符串列表。"""
+def scan_pid(pid, deadline, which="private", on_candidate=None):
+    """只读扫描指定进程，返回 (候选列表, 命中载荷)。
+
+    which:
+      "private"    —— 只扫 MEM_PRIVATE 区（凭证实际所在，速度最快）
+      "other"      —— 只扫非 PRIVATE 区（兜底：万一将来挪到共享内存）
+      "all"        —— 全扫（旧行为，最慢）
+    on_candidate: 每发现一个新候选就回调一次；返回非 None 表示已命中，立即停止。
+    """
     handle = k32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
     if not handle:
-        return []
+        return [], None
     found = []
     seen = set()
     addr = 0
@@ -134,11 +144,17 @@ def scan_pid(pid, deadline):
                 and (mbi.Protect & 0xFF) in READABLE
                 and 0 < size <= MAX_REGION
             )
+            if which == "private":
+                # 关键优化：IMAGE 区（DLL/EXE 代码）实测占 360~380MB 且绝不含凭证，
+                # 5.8.3 里主进程正是被这些冷页拖到扫不完。只读堆/栈即可数秒结束。
+                readable = readable and mbi.Type == MEM_PRIVATE
+            elif which == "other":
+                readable = readable and mbi.Type != MEM_PRIVATE
             if readable:
                 off = 0
                 while off < size:
                     if time.time() > deadline:
-                        return found
+                        return found, None
                     n = min(CHUNK, size - off)
                     if k32.ReadProcessMemory(handle, ctypes.c_void_p(base + off),
                                              buf, n, ctypes.byref(got)):
@@ -148,13 +164,17 @@ def scan_pid(pid, deadline):
                             if len(tok) >= 60 and tok not in seen:
                                 seen.add(tok)
                                 found.append(tok)
+                                if on_candidate is not None:
+                                    hit = on_candidate(tok)
+                                    if hit is not None:
+                                        return found, hit
                     off += n
             addr = base + size
             if addr <= 0 or addr > (1 << 47):
                 break
     finally:
         k32.CloseHandle(handle)
-    return found
+    return found, None
 
 
 # ---------------------------------------------------------------- 凭证校验
@@ -206,6 +226,17 @@ def probe_expiry(token):
 
 
 # ---------------------------------------------------------------- main
+def emit(payload, probe_only):
+    """输出结果。probe 模式剔除 token，只给长度与尾号。"""
+    if probe_only:
+        safe = dict(payload)
+        safe.pop("token", None)
+        print(json.dumps(safe, ensure_ascii=False))
+    else:
+        print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def main():
     probe_only = "--probe" in sys.argv
     deadline = time.time() + DEADLINE_SECONDS
@@ -213,36 +244,46 @@ def main():
     if not probe_only:
         sys.stderr.write("[harvest] WorkBuddy 进程: %d 个\n" % len(procs))
 
-    for pid, kind in procs:
-        if time.time() > deadline:
-            break
-        cands = scan_pid(pid, deadline)
-        if not probe_only and cands:
-            sys.stderr.write("[harvest] PID %d (%s) 命中 %d 个候选\n" % (pid, kind, len(cands)))
-        for tok in cands:
+    def make_cb(pid, kind):
+        def cb(tok):
             ok, info = verify(tok)
             if not probe_only:
                 sys.stderr.write("[harvest]   候选 len=%d sha=%s -> %s\n"
                                  % (len(tok), hashlib.sha256(tok.encode()).hexdigest()[:12],
                                     "有效" if ok else "无效"))
-            if ok:
-                payload = {
-                    "token": tok,
-                    "pid": pid,
-                    "kind": kind,
-                    "source": "memory",
-                    "harvestedAt": int(time.time() * 1000),
-                    "tokenLength": len(tok),
-                    "tokenTail": tok[-6:],
-                }
-                payload.update(probe_expiry(tok))
-                if probe_only:
-                    safe = dict(payload)
-                    safe.pop("token", None)
-                    print(json.dumps(safe, ensure_ascii=False))
-                else:
-                    print(json.dumps(payload, ensure_ascii=False))
-                return 0
+            if not ok:
+                return None
+            payload = {
+                "token": tok,
+                "pid": pid,
+                "kind": kind,
+                "source": "memory",
+                "harvestedAt": int(time.time() * 1000),
+                "tokenLength": len(tok),
+                "tokenTail": tok[-6:],
+            }
+            payload.update(probe_expiry(tok))
+            return payload
+        return cb
+
+    # 第一轮：只扫 MEM_PRIVATE（堆/栈）。实测 5.8.3 主进程 189MB / 4.8 秒内即可命中。
+    # 第二轮：兜底扫非 PRIVATE 区，仅在没命中且还有剩余时间时执行。
+    for which in ("private", "other"):
+        if which == "other" and deadline - time.time() < 20:
+            break
+        for pid, kind in procs:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            # 单进程上限，避免一个 700MB+ 的巨无霸进程吃光全部预算
+            sub_deadline = min(deadline, time.time() + min(PER_PROCESS_SECONDS, remaining))
+            cands, hit = scan_pid(pid, sub_deadline, which, make_cb(pid, kind))
+            if not probe_only and cands:
+                sys.stderr.write("[harvest] PID %d (%s/%s) 命中 %d 个候选\n"
+                                 % (pid, kind, which, len(cands)))
+            if hit is not None:
+                return emit(hit, probe_only)
+
     if probe_only:
         print(json.dumps({"error": "no-valid-token", "procs": len(procs)}, ensure_ascii=False))
     else:

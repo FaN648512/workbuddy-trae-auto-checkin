@@ -9,7 +9,7 @@
 auto-renews expired credentials, writes the refreshed session back, and only pings you on a real failure.*
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)](#)
-[![Version](https://img.shields.io/badge/version-v1.2.0-2ea44f?style=flat-square)](#更新日志)
+[![Version](https://img.shields.io/badge/version-v1.2.1-2ea44f?style=flat-square)](#更新日志)
 [![Node](https://img.shields.io/badge/Node.js-18%2B-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen?style=flat-square)](#)
 [![Targets](https://img.shields.io/badge/targets-WorkBuddy%20%2B%20Trae-8A2BE2?style=flat-square)](#)
@@ -21,9 +21,10 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 ---
 
 > [!IMPORTANT]
-> **v1.2.0 已适配 WorkBuddy 5.7.7 的凭证加密变更（2026-10-09）**
-> 客户端把登录凭证改为加密存盘后，旧方式会签到失败。本版本改用「只读进程内存提取」取回凭证，
-> 不破译厂商加密。**详见 [更新日志](CHANGELOG.md#120---2026-10-09)。**
+> **v1.2.1 已修复 WorkBuddy 5.8.3 下的提取变慢问题（2026-10-27）**
+> 5.8.3 主进程内存涨到约 730 MB，旧逻辑会把时间耗在不含凭证的代码映像区上，
+> 导致签到从 20 秒退化到 11 分钟。现改为只扫 PRIVATE 堆区，**实测 3 秒命中**。
+> **详见 [更新日志](CHANGELOG.md#121---2026-10-27)。**
 
 ---
 
@@ -519,11 +520,12 @@ workbuddy-trae-auto-checkin/
 
 ## 更新日志
 
-完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.0**。
+完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.1**。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **v1.2.0** | 2026-10-09 | **适配 WorkBuddy 5.7.7 凭证加密** —— 新增只读进程内存提取，不破译厂商加密 |
+| **v1.2.1** | 2026-10-27 | **修复 5.8.3 下提取变慢** —— 只扫 PRIVATE 堆区，签到从 11 分钟回到 4 秒 |
+| v1.2.0 | 2026-10-09 | 适配 WorkBuddy 5.7.7 凭证加密 —— 新增只读进程内存提取，不破译厂商加密 |
 | v1.1.0 | 2026-09-18 | 计划任务改为全程无窗口静默运行，消除窗口被误关导致的漏签 |
 | v1.0.0 | 2026-09-14 | 首次发布 —— 双平台签到、自愈机制、加密回写、条件化通知 |
 
