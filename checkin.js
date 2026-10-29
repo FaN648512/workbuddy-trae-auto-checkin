@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const APP_DIR = __dirname;
 const LOG_DIR = path.join(APP_DIR, 'logs');
@@ -89,6 +89,11 @@ const DEFAULT_CONFIG = {
     harvestFromMemory: true,
     harvestPython: '', // 留空则自动探测常见安装路径；也可填 Python 绝对路径
     harvestTimeoutSeconds: 240,
+    // 客户端自动更新时是「先退出 → 装完再启动」，这段时间进程里根本没有任何凭证
+    // （实测 2026-10-29：10:05 退出装更新，10:15 才重新启动）。
+    // 所以提取必须能跨越这个空窗期，而不是试三四次就放弃。
+    harvestTotalSeconds: 900, // 单次签到内，提取凭证的总等待预算（秒）
+    harvestRetryIntervalSeconds: 45, // 每轮重试间隔（秒）
   },
   retry: {
     network: 3,
@@ -763,7 +768,7 @@ function runCapture(exe, args, timeoutMs) {
  * 从运行中的客户端进程内存里收割一份可用的 WorkBuddy 凭证。
  * 成功返回 { token, tokenTail, activityEnd, pid }，否则 null。
  */
-async function harvestWorkBuddyToken() {
+async function harvestWorkBuddyToken(quiet) {
   if (!CFG.workbuddy.harvestFromMemory) return null;
   const script = path.join(APP_DIR, 'harvest_wb.py');
   if (!fs.existsSync(script)) {
@@ -776,7 +781,7 @@ async function harvestWorkBuddyToken() {
     return null;
   }
   if (VERBOSE) log(`  · 使用 Python：${py}`);
-  log('  🧠 正在从运行中的 WorkBuddy 客户端提取登录凭证（只读内存，不破译加密）…');
+  if (!quiet) log('  🧠 正在从运行中的 WorkBuddy 客户端提取登录凭证（只读内存，不破译加密）…');
 
   const r = await runCapture(py, [script], (CFG.workbuddy.harvestTimeoutSeconds || 240) * 1000);
   if (!r.ok) {
@@ -799,6 +804,98 @@ async function harvestWorkBuddyToken() {
     activityEnd: j.end_time || '',
     pid: j.pid,
   };
+}
+
+/** 当前 WorkBuddy 进程数；查询失败返回 -1（未知，避免据此误判「没在运行」） */
+function workbuddyProcCount() {
+  try {
+    const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq WorkBuddy.exe', '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 20000,
+    });
+    return (out.match(/WorkBuddy\.exe/gi) || []).length;
+  } catch (e) {
+    return -1;
+  }
+}
+
+/**
+ * 判断客户端是否正在安装更新。
+ * 客户端 5.9.3 的更新流程是「先退出进程 → 静默装包 → 装完重新启动」，
+ * 安装期间 install 目录整体被改写，进程数为 0 —— 这段时间内提取必然失败，
+ * 只能等。识别出来才好如实告诉用户「在装更新」，而不是「取不到凭证」。
+ */
+function workbuddyInstalling() {
+  const exe = expand(CFG.workbuddy.appExe);
+  const WINDOW = 20 * 60 * 1000;
+  if (exe) {
+    try {
+      if (Date.now() - fs.statSync(path.dirname(exe)).mtimeMs < WINDOW) return true;
+    } catch (e) {
+      /* 目录不存在就跳过 */
+    }
+  }
+  try {
+    const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq installer.exe', '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 20000,
+    });
+    if (/installer\.exe/i.test(out)) return true;
+  } catch (e) {
+    /* ignore */
+  }
+  return false;
+}
+
+/**
+ * 带预算的提取：在 harvestTotalSeconds 内反复尝试，跨越客户端更新重启的空窗期。
+ * 只在「确实没在运行且没在装更新」时才拉起客户端，且全程最多拉起一次（限频仍由
+ * workbuddyLaunchOnly 把关，避免一天里反复弹窗）。
+ */
+async function harvestWithRetry(state) {
+  const totalMs = (CFG.workbuddy.harvestTotalSeconds || 900) * 1000;
+  const intervalMs = Math.max(10, CFG.workbuddy.harvestRetryIntervalSeconds || 45) * 1000;
+  const deadline = Date.now() + totalMs;
+  let attempt = 0;
+  let launchTried = false;
+  let launchAt = 0;
+  let lastNote = '';
+
+  for (;;) {
+    attempt++;
+    const h = await harvestWorkBuddyToken(attempt > 1);
+    if (h) return h;
+    if (Date.now() >= deadline) break;
+
+    const procs = workbuddyProcCount();
+    const installing = workbuddyInstalling();
+    let note = '';
+    if (installing) {
+      note = '客户端正在安装更新（安装目录刚被改写），等它装完自动启动…';
+    } else if (procs === 0) {
+      note = launchTried && Date.now() - launchAt < 5 * 60 * 1000
+        ? '客户端启动后立刻退出了（多半是在装更新），继续等…'
+        : '客户端没有在运行';
+    } else if (attempt % 3 === 0) {
+      note = `客户端在运行（${procs} 个进程），但还没装载出可用凭证，继续等…`;
+    }
+    if (note && note !== lastNote) {
+      log('  ⏳ ' + note);
+      lastNote = note;
+    }
+
+    if (!installing && procs === 0 && !launchTried && CFG.workbuddy.launchAppOnExpiry) {
+      launchTried = true;
+      if (await workbuddyLaunchOnly(state)) launchAt = Date.now();
+    }
+
+    const wait = Math.min(intervalMs, deadline - Date.now());
+    if (wait <= 0) break;
+    await sleep(wait);
+  }
+  return null;
 }
 
 /* ==================================================================
@@ -966,21 +1063,13 @@ async function doWorkBuddy(state, problems) {
     if (auth.encrypted) {
       log('  ℹ 客户端把登录凭证加密存盘了（磁盘上无明文），改用「内存提取」获取凭证');
     }
-    let h = await harvestWorkBuddyToken();
-
-    // 客户端没开着 → 先拉起一次，再等它把凭证装载进内存
-    if (!h && CFG.workbuddy.launchAppOnExpiry) {
-      if (await workbuddyLaunchOnly(state)) {
-        for (let i = 0; i < 3 && !h; i++) {
-          await sleep(8000);
-          h = await harvestWorkBuddyToken();
-        }
-      }
-    }
+    // 在总预算内反复尝试，跨越「客户端自动更新 → 退出装包 → 重新启动」的空窗期
+    const h = await harvestWithRetry(state);
 
     if (!h) {
+      const mins = Math.round((CFG.workbuddy.harvestTotalSeconds || 900) / 60);
       const m = auth.encrypted
-        ? '客户端把登录凭证加密存盘了，且未能从运行中的客户端内存里取到凭证（请确认 WorkBuddy 客户端正在运行；若已在运行仍失败，检查本机 Python 环境，或在 config.json 里指定 workbuddy.harvestPython）'
+        ? `客户端把登录凭证加密存盘了，且 ${mins} 分钟内始终没能从客户端内存里取到凭证（请确认 WorkBuddy 客户端正在运行；若已在运行仍失败，检查本机 Python 环境，或在 config.json 里指定 workbuddy.harvestPython）`
         : '登录文件里没有 accessToken，请重新登录 WorkBuddy';
       log('  ❌ ' + m);
       problems.push('WorkBuddy：' + m);

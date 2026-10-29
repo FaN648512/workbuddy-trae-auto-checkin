@@ -9,7 +9,7 @@
 auto-renews expired credentials, writes the refreshed session back, and only pings you on a real failure.*
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)](#)
-[![Version](https://img.shields.io/badge/version-v1.2.1-2ea44f?style=flat-square)](#更新日志)
+[![Version](https://img.shields.io/badge/version-v1.2.2-2ea44f?style=flat-square)](#更新日志)
 [![Node](https://img.shields.io/badge/Node.js-18%2B-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen?style=flat-square)](#)
 [![Targets](https://img.shields.io/badge/targets-WorkBuddy%20%2B%20Trae-8A2BE2?style=flat-square)](#)
@@ -21,10 +21,10 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 ---
 
 > [!IMPORTANT]
-> **v1.2.1 已修复 WorkBuddy 5.8.3 下的提取变慢问题（2026-10-27）**
-> 5.8.3 主进程内存涨到约 730 MB，旧逻辑会把时间耗在不含凭证的代码映像区上，
-> 导致签到从 20 秒退化到 11 分钟。现改为只扫 PRIVATE 堆区，**实测 3 秒命中**。
-> **详见 [更新日志](CHANGELOG.md#121---2026-10-27)。**
+> **v1.2.2 已修复「客户端自动更新期间漏签」（2026-10-29）**
+> 客户端更新时会「先退出 → 静默装包 → 重新启动」，这段空窗期（实测约 10 分钟）进程里没有任何凭证。
+> 旧逻辑 5 分钟就放弃，必然漏签；现改为在 **15 分钟预算**内反复尝试，跨越更新窗口。
+> **详见 [更新日志](CHANGELOG.md#122---2026-10-29)。**
 
 ---
 
@@ -83,7 +83,7 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 - **零第三方依赖** —— 仅使用 Node 内置模块，无需 `npm install`
 - **凭证自动续期** —— accessToken 剩余有效期低于阈值时自动换新
 - **加密回写** —— 续期后的新凭证按原算法加密写回，客户端不会掉登录
-- **八层自愈** —— 覆盖凭证加密存盘、凭证过期、服务限流、网络抖动、路径变更、瞬时读写抖动
+- **九层自愈** —— 覆盖凭证加密存盘、客户端更新空窗期、凭证过期、服务限流、网络抖动、路径变更、瞬时读写抖动
 - **幂等运行** —— 一天触发多次只签到一次，重复运行零副作用
 - **条件化通知** —— 支持 PushPlus / Server酱 / 企业微信 / 飞书 / Bark 五种通道
 - **完整诊断链** —— 离线自检、环境诊断、模拟失败、通知测试
@@ -94,12 +94,13 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 
 ## 自愈机制
 
-签到失败的原因很多，本项目把它们整理为**八层递进**的处理策略。绝大多数异常在前五层内自动消化，
+签到失败的原因很多，本项目把它们整理为**九层递进**的处理策略。绝大多数异常在前五层内自动消化，
 你只会感知到「签到了」或「收到一条真失败通知」。
 
 | 层 | 触发条件 | 动作 |
 |:--:|---|---|
 | **L0** | 磁盘凭证已被客户端**加密存盘**（5.7.7+） | 只读地读取客户端进程内存里它**已解密好**的凭证 |
+| **L0′** | 客户端正在**自动更新**（进程已退出、装完再启动） | 识别出「在装更新」，在 15 分钟预算内持续重试，等它装完 |
 | **L1** | 凭证有效 | 直接签到 |
 | **L2** | 剩余有效期 < 60 分钟 或 已过期 | 用 refreshToken 自动换新 |
 | **L3** | 续期成功 | 回写登录态文件，客户端不掉线 |
@@ -304,6 +305,8 @@ cp config.example.json config.json
 | `workbuddy.harvestFromMemory` | `true` | 磁盘凭证被客户端加密时（5.7.7+），改从运行中的客户端进程内存提取 |
 | `workbuddy.harvestPython` | 空 | Python 解释器绝对路径；留空则自动探测常见安装位置 |
 | `workbuddy.harvestTimeoutSeconds` | `240` | 单次内存提取的时间上限（秒） |
+| `workbuddy.harvestTotalSeconds` | `900` | 提取凭证的**总等待预算**（秒）；客户端装更新时进程里没凭证，预算要能跨越这段空窗期 |
+| `workbuddy.harvestRetryIntervalSeconds` | `45` | 上述预算内的每轮重试间隔（秒） |
 | `retry.network` | `3` | 网络层重试次数 |
 | `retry.traeBusy` | `3` | Trae 限流（`9074`）重试次数 |
 | `notify.type` | `none` | `pushplus` / `serverchan` / `wecom` / `feishu` / `bark` / `none` |
@@ -463,6 +466,22 @@ workbuddy-trae-auto-checkin/
 </details>
 
 <details>
+<summary><b>日志说「客户端正在安装更新」，这算失败吗？</b></summary>
+
+不算。客户端自动更新时会**先退出全部进程 → 静默装包 → 装完重新启动**，
+这段空窗期（实测约 10 分钟）进程里根本没有任何凭证可读，任何提取方式都拿不到。
+
+脚本遇到这种情况会：
+
+1. 识别出安装状态（安装目录刚被改写，或 `installer.exe` 在跑）；
+2. 每 45 秒重试一次，最多等 **15 分钟**（`workbuddy.harvestTotalSeconds`）；
+3. 客户端装完自动启动后立刻取到凭证并签到。
+
+所以看到这类日志通常再等一会儿就有结果了。如果 15 分钟预算用尽仍未成功，
+当天 20:30 的定时触发会自动补上。
+</details>
+
+<details>
 <summary><b>担心脚本动我的登录态文件？</b></summary>
 
 默认行为：
@@ -506,11 +525,12 @@ workbuddy-trae-auto-checkin/
 
 - [x] 双平台签到（WorkBuddy + Trae）
 - [x] Trae 凭证自动续期 + 加密回写
-- [x] 八层自愈机制
+- [x] 九层自愈机制
 - [x] 五通道通知 + 条件化推送
 - [x] 环境诊断与离线自检
 - [x] 计划任务静默运行（无控制台窗口）
 - [x] **适配 WorkBuddy 凭证加密存盘（`v1.2.0`）**
+- [x] **跨越客户端自动更新的空窗期重试（`v1.2.2`）**
 - [ ] 支持 macOS / Linux 计划任务（launchd / systemd）
 - [ ] 多账号支持
 - [ ] 连续签到天数统计与月度报表
@@ -520,11 +540,11 @@ workbuddy-trae-auto-checkin/
 
 ## 更新日志
 
-完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.1**。
+完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.2**。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **v1.2.1** | 2026-10-27 | **修复 5.8.3 下提取变慢** —— 只扫 PRIVATE 堆区，签到从 11 分钟回到 4 秒 |
+| **v1.2.2** | 2026-10-29 | **修复客户端自动更新期间漏签** —— 更新时进程里没凭证，现改为 15 分钟预算内持续重试 |
 | v1.2.0 | 2026-10-09 | 适配 WorkBuddy 5.7.7 凭证加密 —— 新增只读进程内存提取，不破译厂商加密 |
 | v1.1.0 | 2026-09-18 | 计划任务改为全程无窗口静默运行，消除窗口被误关导致的漏签 |
 | v1.0.0 | 2026-09-14 | 首次发布 —— 双平台签到、自愈机制、加密回写、条件化通知 |

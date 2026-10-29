@@ -36,7 +36,10 @@
     "_方案B说明": "客户端 5.7.7+ 把登录凭证加密存盘，磁盘上已无明文 accessToken。此时脚本改从【运行中的客户端进程内存】只读地取出它自己已解密好的凭证（harvest_wb.py 实现），不破译加密、不落盘。",
     "harvestFromMemory": true,
     "harvestPython": "",
-    "harvestTimeoutSeconds": 240
+    "harvestTimeoutSeconds": 240,
+    "harvestTotalSeconds": 900,
+    "harvestRetryIntervalSeconds": 45,
+    "_更新空窗期说明": "客户端自动更新时会「先退出 → 静默装包 → 重新启动」，这期间进程里没有任何凭证（实测约 10 分钟）。harvestTotalSeconds 是这段时间的总等待预算，harvestRetryIntervalSeconds 是每轮重试间隔；预算太小会在更新途中误判为失败。"
   },
   "retry": {
     "network": 3,
