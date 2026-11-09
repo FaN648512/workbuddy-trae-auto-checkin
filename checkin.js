@@ -108,6 +108,10 @@ const DEFAULT_CONFIG = {
     onSuccess: false,
     onFailure: true,
   },
+  // 自检里用来核对「计划任务是否还指向本目录」——项目搬家后最容易悄悄失效的一环
+  selfCheck: {
+    taskName: 'DailyCheckin_WorkBuddy_Trae',
+  },
 };
 
 function deepMerge(base, over) {
@@ -1386,6 +1390,34 @@ function selfTest() {
     return exe;
   });
   check('配置文件可读', () => JSON.stringify(CFG.endpoints).length > 0);
+  check('计划任务指向本目录', () => {
+    // 项目搬家（换盘/改目录名）后，计划任务里的动作路径不会跟着变，
+    // 每次触发都会以 0x8007010B（目录名无效）静默失败。这里主动核对一次。
+    const name = (CFG.selfCheck && CFG.selfCheck.taskName) || 'DailyCheckin_WorkBuddy_Trae';
+    const os = require('os');
+    const tmp = path.join(os.tmpdir(), `wb-task-${process.pid}.xml`);
+    try {
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-Command',
+          `$x = Export-ScheduledTask -TaskName '${name}' -ErrorAction Stop; ` +
+          `[System.IO.File]::WriteAllText('${tmp}', $x, [System.Text.Encoding]::UTF8)`],
+        { windowsHide: true, timeout: 30000 }
+      );
+      const xml = fs.readFileSync(tmp, 'utf8').replace(/^\uFEFF/, '');
+      if (xml.indexOf(APP_DIR) >= 0) return `指向 ${APP_DIR}`;
+      throw new Error(`计划任务指向的路径不是当前目录（当前 ${APP_DIR}），触发时会报 0x8007010B「目录名无效」`);
+    } catch (e) {
+      if (e && /目录名无效|不是当前目录/.test(String(e.message))) throw e;
+      return '（未找到同名计划任务或无法读取，跳过）';
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  });
   check('日志目录可写', () => {
     fs.mkdirSync(LOG_DIR, { recursive: true });
     return LOG_DIR;
