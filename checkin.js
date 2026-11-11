@@ -772,8 +772,10 @@ function runCapture(exe, args, timeoutMs) {
  * 从运行中的客户端进程内存里收割一份可用的 WorkBuddy 凭证。
  * 成功返回 { token, tokenTail, activityEnd, pid }，否则 null。
  */
-async function harvestWorkBuddyToken(quiet) {
+async function harvestWorkBuddyToken(attempt) {
   if (!CFG.workbuddy.harvestFromMemory) return null;
+  const n = Math.max(1, parseInt(attempt, 10) || 1);
+  const quiet = n > 1;
   const script = path.join(APP_DIR, 'harvest_wb.py');
   if (!fs.existsSync(script)) {
     if (VERBOSE) log('  · 未找到 harvest_wb.py，跳过内存提取');
@@ -787,7 +789,9 @@ async function harvestWorkBuddyToken(quiet) {
   if (VERBOSE) log(`  · 使用 Python：${py}`);
   if (!quiet) log('  🧠 正在从运行中的 WorkBuddy 客户端提取登录凭证（只读内存，不破译加密）…');
 
-  const r = await runCapture(py, [script], (CFG.workbuddy.harvestTimeoutSeconds || 240) * 1000);
+  // --attempt N：让提取器在重试轮次里轮换扫描起点，避免每次都卡在同一个超大进程上
+  const r = await runCapture(py, [script, '--attempt', String(n)],
+    (CFG.workbuddy.harvestTimeoutSeconds || 240) * 1000);
   if (!r.ok) {
     const tail = (r.err || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
     if (VERBOSE) log(`  · 内存提取未成功（${r.reason}）${tail ? '：' + tail : ''}`);
@@ -869,8 +873,10 @@ async function harvestWithRetry(state) {
 
   for (;;) {
     attempt++;
-    const h = await harvestWorkBuddyToken(attempt > 1);
+    const t0 = Date.now();
+    const h = await harvestWorkBuddyToken(attempt);
     if (h) return h;
+    const spent = Math.round((Date.now() - t0) / 1000);
     if (Date.now() >= deadline) break;
 
     const procs = workbuddyProcCount();
@@ -882,8 +888,8 @@ async function harvestWithRetry(state) {
       note = launchTried && Date.now() - launchAt < 5 * 60 * 1000
         ? '客户端启动后立刻退出了（多半是在装更新），继续等…'
         : '客户端没有在运行';
-    } else if (attempt % 3 === 0) {
-      note = `客户端在运行（${procs} 个进程），但还没装载出可用凭证，继续等…`;
+    } else if (attempt === 1 || attempt % 3 === 0) {
+      note = `第 ${attempt} 轮未取到凭证（本轮用时 ${spent} 秒，客户端 ${procs} 个进程在运行），继续重试…`;
     }
     if (note && note !== lastNote) {
       log('  ⏳ ' + note);
@@ -1068,7 +1074,9 @@ async function doWorkBuddy(state, problems) {
       log('  ℹ 客户端把登录凭证加密存盘了（磁盘上无明文），改用「内存提取」获取凭证');
     }
     // 在总预算内反复尝试，跨越「客户端自动更新 → 退出装包 → 重新启动」的空窗期
+    const harvestT0 = Date.now();
     const h = await harvestWithRetry(state);
+    const harvestSec = Math.round((Date.now() - harvestT0) / 1000);
 
     if (!h) {
       const mins = Math.round((CFG.workbuddy.harvestTotalSeconds || 900) / 60);
@@ -1092,7 +1100,10 @@ async function doWorkBuddy(state, problems) {
       fromPid: h.pid,
     });
     saveState(state);
-    log(`  ✅ 已从客户端内存取到凭证（尾号 ${h.tokenTail}${h.activityEnd ? '，活动截止 ' + h.activityEnd : ''}）`);
+    log(`  ✅ 已从客户端内存取到凭证（尾号 ${h.tokenTail}${h.activityEnd ? '，活动截止 ' + h.activityEnd : ''}，用时 ${harvestSec} 秒）`);
+    if (harvestSec > 90) {
+      log('  ℹ 这次提取明显偏慢：刚唤醒时客户端内存还在 pagefile 里，逐页读盘所致；预取已生效，下次通常几秒完成');
+    }
   }
 
   const ahead = (CFG.workbuddy.refreshAheadMinutes || 60) * 60 * 1000;

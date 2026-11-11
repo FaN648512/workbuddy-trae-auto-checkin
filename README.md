@@ -9,7 +9,7 @@
 auto-renews expired credentials, writes the refreshed session back, and only pings you on a real failure.*
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)](#)
-[![Version](https://img.shields.io/badge/version-v1.2.3-2ea44f?style=flat-square)](#更新日志)
+[![Version](https://img.shields.io/badge/version-v1.2.4-2ea44f?style=flat-square)](#更新日志)
 [![Node](https://img.shields.io/badge/Node.js-18%2B-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen?style=flat-square)](#)
 [![Targets](https://img.shields.io/badge/targets-WorkBuddy%20%2B%20Trae-8A2BE2?style=flat-square)](#)
@@ -21,11 +21,10 @@ auto-renews expired credentials, writes the refreshed session back, and only pin
 ---
 
 > [!IMPORTANT]
-> **v1.2.3 修复「项目搬家后计划任务悄悄失效」（2026-11-09）**
-> 工作区从 C 盘迁到 D 盘后，计划任务的动作路径不会自动跟着变，每次触发都以
-> `0x8007010B`（目录名无效）静默失败，**连续漏签 7 天**。
-> 本版新增自检项「计划任务指向本目录」，搬家后跑一次 `--self-test` 即可发现。
-> **详见 [更新日志](CHANGELOG.md#123---2026-11-09)。**
+> **v1.2.4 修复「休眠唤醒后第一次提取要 145 秒」（2026-11-11）**
+> 刚唤醒时客户端内存页还在 pagefile 里，逐页随机读盘只有 1.6 MB/s。
+> 现改为读之前先 `PrefetchVirtualMemory` 整窗批量换入，把随机读变成顺序读。
+> **详见 [更新日志](CHANGELOG.md#124---2026-11-11)。**
 
 ---
 
@@ -533,6 +532,7 @@ workbuddy-trae-auto-checkin/
 - [x] **适配 WorkBuddy 凭证加密存盘（`v1.2.0`）**
 - [x] **跨越客户端自动更新的空窗期重试（`v1.2.2`）**
 - [x] **自检核对计划任务路径，防止搬家后静默失效（`v1.2.3`）**
+- [x] **批量预取内存页，消除唤醒后首次提取的慢速（`v1.2.4`）**
 - [ ] 支持 macOS / Linux 计划任务（launchd / systemd）
 - [ ] 多账号支持
 - [ ] 连续签到天数统计与月度报表
@@ -542,11 +542,12 @@ workbuddy-trae-auto-checkin/
 
 ## 更新日志
 
-完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.3**。
+完整的版本变更记录见 **[CHANGELOG.md](CHANGELOG.md)**，当前版本 **v1.2.4**。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **v1.2.3** | 2026-11-09 | **修复项目搬家后计划任务静默失效** —— 自检新增「计划任务指向本目录」核对 |
+| **v1.2.4** | 2026-11-11 | **修复唤醒后提取极慢** —— 批量预取内存页，37→61 MB/s，145 秒回到 6 秒 |
+| v1.2.3 | 2026-11-09 | 修复项目搬家后计划任务静默失效 —— 自检新增「计划任务指向本目录」核对 |
 | v1.2.2 | 2026-10-29 | **修复客户端自动更新期间漏签** —— 更新时进程里没凭证，现改为 15 分钟预算内持续重试 |
 | v1.2.1 | 2026-10-27 | 修复 5.8.3 下提取退化 —— 只扫 PRIVATE 堆区，11 分钟回到 4 秒 |
 | v1.2.0 | 2026-10-09 | 适配 WorkBuddy 5.7.7 凭证加密 —— 新增只读进程内存提取，不破译厂商加密 |
